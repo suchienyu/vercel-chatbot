@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: postgres2
+    restart: always
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      PGDATA: /var/lib/postgresql/data
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    # command: >
+    #   bash -c "
+    #   docker-entrypoint.sh postgres &
+    #   until pg_isready -h localhost -p 5432; do sleep 1; done;
+    #   psql -U postgres -d postgres -c 'CREATE EXTENSION IF NOT EXISTS vector;'"
+
+  api:
+    container_name: api2
+    image: chiennn/ttodoapi:latest
+    platform: linux/amd64
+    restart: always
+    ports:
+      - 5001:5001
+    environment:
+      PORT: 5001
+      DB_USER: postgres
+      DB_HOST: postgres
+      DB_DATABASE: postgres
+      DB_PASSWORD: password
+      DB_PORT: 5432
+    depends_on:
+      - postgres
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin2
+    restart: always
+    environment:
+      PGADMIN_DEFAULT_EMAIL: example@gmail.com
+      PGADMIN_DEFAULT_PASSWORD: password
+      PGADMIN_LISTEN_PORT: 80
+    ports:
+      - "8888:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - postgres
+
+volumes:
+  postgres_data:
+  pgadmin_data:

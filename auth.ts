@@ -4,6 +4,14 @@ import { authConfig } from './auth.config'
 import { z } from 'zod'
 import { getStringFromBuffer } from './lib/utils'
 import { getUser } from './app/login/actions'
+import { customAlphabet } from "nanoid";
+import { clsx, type ClassValue } from "clsx";
+import { twMerge } from "tailwind-merge";
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
+
+export const nanoid = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789");
 
 export const { auth, signIn, signOut } = NextAuth({
   ...authConfig,
