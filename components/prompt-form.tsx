@@ -41,6 +41,7 @@ export function PromptForm({
     <form
       ref={formRef}
       onSubmit={async (e: any) => {
+        console.log("!!!!!!!")
         e.preventDefault()
 
         // Blur focus on mobile
@@ -63,6 +64,7 @@ export function PromptForm({
 
         // Submit and get response message
         const responseMessage = await submitUserMessage(value)
+        console.log('responseMessage',responseMessage)
         setMessages(currentMessages => [...currentMessages, responseMessage])
       }}
     >
