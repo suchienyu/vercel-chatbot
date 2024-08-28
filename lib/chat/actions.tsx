@@ -704,7 +704,10 @@ type ToolResult = {
   toolName: 'listStocks' | 'showStockPrice' | 'showStockPurchase' | 'getEvents';
   result: any; // 您可以更精确地定义 result 的类型
 };
-
+type ToolMessage = {
+  role: 'tool';
+  content: ToolResult[];
+};
 export const getUIStateFromAIState = (aiState: Chat) => {
   return aiState.messages
     .filter(message => message.role !== 'system')
@@ -712,7 +715,7 @@ export const getUIStateFromAIState = (aiState: Chat) => {
       id: `${aiState.chatId}-${index}`,
       display:
         message.role === 'tool' ? (
-          message.content.map((tool: ToolResult) => {
+          (message as ToolMessage).content.map((tool: ToolResult) => {
             return tool.toolName === 'listStocks' ? (
               <BotCard>
                 {/* TODO: Infer types based on the tool result*/}
