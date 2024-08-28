@@ -1,5 +1,5 @@
 import 'server-only'
-
+import ReactMarkdown from 'react-markdown';
 import {
   createAI,
   createStreamableUI,
@@ -35,6 +35,40 @@ import { saveChat } from '@/app/actions'
 import { SpinnerMessage, UserMessage } from '@/components/stocks/message'
 import { Chat, Message } from '@/lib/types'
 import { auth } from '@/auth'
+
+import * as use from '@tensorflow-models/universal-sentence-encoder';
+import * as tf from '@tensorflow/tfjs';
+
+let model: use.UniversalSentenceEncoder | null = null;
+
+async function loadModel(): Promise<use.UniversalSentenceEncoder> {
+  if (!model) {
+    model = await use.load();
+  }
+  return model;
+}
+
+interface Stock {
+  symbol: string;
+  price: number;
+  delta: number;
+}
+interface StockData {
+  symbol: string;
+  price: number;
+  delta: number;
+}
+interface PurchaseData {
+  symbol: string;
+  price: number;
+  numberOfShares?: number;
+}
+interface Event {
+  date: string;
+  headline: string;
+  description: string;
+}
+
 
 async function confirmPurchase(symbol: string, price: number, amount: number) {
   'use server'
@@ -89,9 +123,8 @@ async function confirmPurchase(symbol: string, price: number, amount: number) {
         {
           id: nanoid(),
           role: 'system',
-          content: `[User has purchased ${amount} shares of ${symbol} at ${price}. Total cost = ${
-            amount * price
-          }]`
+          content: `[User has purchased ${amount} shares of ${symbol} at ${price}. Total cost = ${amount * price
+            }]`
         }
       ]
     })
@@ -127,19 +160,44 @@ async function submitUserMessage(content: string) {
   let textNode: undefined | React.ReactNode
 
   const result = await streamUI({
-    model: openai('gpt-3.5-turbo'),
+    model: openai('gpt-4o-mini'),
     initial: <SpinnerMessage />,
-    system: `You are a knowledgeable and precise assistant. Your primary goal is to provide accurate information based on your knowledge base. Follow these rules strictly:
+    system: `You are an AI assistant with access to a database through the 'getInformation' tool.CRITICAL INSTRUCTION: YOU MUST RESPOND IN THE EXACT LANGUAGE OF THE USER'S QUERY. Follow these instructions carefully:
 
-    1. If the user's message contains the keyword "add", use the 'addResource' tool to add the information to the database. The content to be added is the entire message after the "add" keyword.
+    1. For EVERY user query, you MUST use the 'getInformation' tool to search the database. This is your primary and only source of information.
+
+    2. ALWAYS wait for and use the result from the 'getInformation' tool before formulating your response.
+
+    3. Your response should be based SOLELY on the information returned by the 'getInformation' tool. Do not use any other knowledge or make assumptions.
+
+    4. If the 'getInformation' tool returns "No specific information found in the database." or any similar message indicating no data was found, inform the user that you don't have that information in your database.
+
+    5. Never say "I don't have access to personal information" or similar phrases. Your knowledge comes exclusively from the 'getInformation' tool.
+
+    6. Translate the plain text parts of your response into the same language as the user's query. Do not alter any Markdown, links, images, or non-text elements. For example, if the user asks a question in Chinese, respond in Chinese for all plain text, while keeping any Markdown content unchanged.
+
+    Remember: You MUST use the 'getInformation' tool for EVERY query, without exception. Do not try to answer from your general knowledge or training data.
+
+    ADDITIONAL MANDATORY INSTRUCTIONS:
+
+    7. LANGUAGE MATCHING IS COMPULSORY: You MUST respond in EXACTLY the same language as the user's query for all plain text. This is non-negotiable and must be followed without fail.
+
+    8. PRESERVE MARKDOWN INTEGRITY: While translating plain text, you MUST NOT alter any Markdown syntax, code blocks, or content within backticks. These must remain exactly as provided by the 'getInformation' tool.
+
+    9. TRANSLATION PRIORITY: If the information from the 'getInformation' tool is in a different language than the user's query, you MUST translate all plain text to match the user's language. This translation is your responsibility and must be accurate.
+
+    10. LANGUAGE IDENTIFICATION: If you cannot identify the user's language or are unable to translate into it, you MUST respond in English and apologize for the language limitation.
+
+    11. VERIFICATION: After composing your response, you MUST verify that you have followed all these instructions, especially regarding language matching and Markdown preservation.
+
+    12. LANGUAGE CHECK: Before sending your response, you MUST perform these steps:
+      a. Identify the language of the user's query.
+      b. Ensure your entire response (except Markdown elements) is in that exact language.
+      c. If you find any part not in the correct language, translate it immediately.
     
-    2. For all other user queries, use the 'getInformation' tool to search for relevant information.
-    
-    3. If the 'getInformation' tool doesn't find any similar answers or relevant information, respond with "我不知道" (I don't know).
-    
-    4. Only respond based on the information returned by the tools. Do not use any other knowledge or make assumptions.
-    
-    5. Respond in the same language as the user's query.`,
+    13. HANDLING TOOL RESPONSE: If the 'getInformation' tool returns content in a language different from the user's query, you MUST translate all plain text to the user's language while preserving any Markdown formatting.
+
+    FINAL REMINDER: IT IS ABSOLUTELY MANDATORY TO RESPOND IN THE USER'S LANGUAGE. FAILURE TO DO SO IS NOT ACCEPTABLE.`,
     messages: [
       ...aiState.get().messages.map((message: any) => ({
         role: message.role,
@@ -147,7 +205,7 @@ async function submitUserMessage(content: string) {
         name: message.name
       }))
     ],
-    text: ({ content, done, delta }) => {
+    text: ({ content, done, delta }: { content: string; done: boolean; delta: string }) => {
       if (!textStream) {
         textStream = createStreamableValue('')
         textNode = <BotMessage content={textStream.value} />
@@ -162,7 +220,7 @@ async function submitUserMessage(content: string) {
             {
               id: nanoid(),
               role: 'assistant',
-              content
+              content: 'REMEMBER: Your next response MUST be in the same language as the user\'s last query.'
             }
           ]
         })
@@ -173,6 +231,104 @@ async function submitUserMessage(content: string) {
       return textNode
     },
     tools: {
+      getInformation: {
+        description: 'Search for relevant information in the database',
+        parameters: z.object({
+          query: z.string().describe('The search query'),
+        }),
+        generate: async function* ({ query }: { query: string }) {
+          yield (
+            <BotCard>
+              <div className="inline-flex items-start gap-1 md:items-center">
+                {spinner}
+                <p className="mb-2">Searching for relevant information...</p>
+              </div>
+            </BotCard>
+          )
+
+          try {
+            await tf.ready();
+            console.log('TensorFlow.js initialized');
+            console.log('Loading model...');
+            const useModel = await loadModel();
+            console.log('Model loaded successfully');
+
+            console.log('Generating query embedding...');
+            const queryEmbedding = await useModel.embed(query);
+            const queryVector = await queryEmbedding.array();
+            console.log('Query vector before sending:', queryVector[0]);
+
+            console.log('Sending request to backend...');
+            const res = await fetch('http://localhost:3002/api/chat', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                "messages": [
+                  {
+                    "role": "user",
+                    "content": query,
+                    "language": "en"
+                  }
+                ],
+                queryVector: Array.from(queryVector[0])
+              }),
+            });
+            const response = await res.json();
+            console.log('Database query result:', response);
+
+            let result = response.response || "No specific information found in the database.";
+            
+            const toolCallId = nanoid()
+            aiState.done({
+              ...aiState.get(),
+              messages: [
+                ...aiState.get().messages,
+                {
+                  id: nanoid(),
+                  role: 'assistant',
+                  content: [
+                    {
+                      type: 'tool-call',
+                      toolName: 'getInformation',
+                      toolCallId,
+                      args: { query }
+                    }
+                  ]
+                },
+                {
+                  id: nanoid(),
+                  role: 'tool',
+                  content: [
+                    {
+                      type: 'tool-result',
+                      toolName: 'getInformation',
+                      toolCallId,
+                      result: result
+                    }
+                  ]
+                }
+              ]
+            })
+
+            return (
+              <BotCard>
+                <h3 className="text-lg font-semibold mb-2">Search Results:</h3>
+                <ReactMarkdown>{result}</ReactMarkdown>
+
+              </BotCard>
+            )
+          } catch (error) {
+            console.error('Error performing RAG search:', error)
+            return (
+              <BotCard>
+                <p className="text-red-500">An error occurred while searching. Please try again later.</p>
+              </BotCard>
+            )
+          }
+        }
+      },
       listStocks: {
         description: 'List three imaginary stocks that are trending.',
         parameters: z.object({
@@ -184,7 +340,8 @@ async function submitUserMessage(content: string) {
             })
           )
         }),
-        generate: async function* ({ stocks }) {
+
+        generate: async function* ({ stocks }: { stocks: Stock[] }) {
           yield (
             <BotCard>
               <StocksSkeleton />
@@ -245,7 +402,7 @@ async function submitUserMessage(content: string) {
           price: z.number().describe('The price of the stock.'),
           delta: z.number().describe('The change in price of the stock')
         }),
-        generate: async function* ({ symbol, price, delta }) {
+        generate: async function* ({ symbol, price, delta }: StockData) {
           yield (
             <BotCard>
               <StockSkeleton />
@@ -311,7 +468,7 @@ async function submitUserMessage(content: string) {
               'The **number of shares** for a stock or currency to purchase. Can be optional if the user did not specify it.'
             )
         }),
-        generate: async function* ({ symbol, price, numberOfShares = 100 }) {
+        generate: async function* ({ symbol, price, numberOfShares = 100 }: PurchaseData) {
           const toolCallId = nanoid()
 
           if (numberOfShares <= 0 || numberOfShares > 1000) {
@@ -422,7 +579,7 @@ async function submitUserMessage(content: string) {
             })
           )
         }),
-        generate: async function* ({ events }) {
+        generate: async function* ({ events }: { events: Event[] }) {
           yield (
             <BotCard>
               <EventsSkeleton />
@@ -513,7 +670,7 @@ export const AI = createAI<AIState, UIState>({
       return
     }
   },
-  onSetAIState: async ({ state }) => {
+  onSetAIState: async ({ state }: { state: AIState }) => {
     'use server'
 
     const session = await auth()
@@ -543,6 +700,10 @@ export const AI = createAI<AIState, UIState>({
     }
   }
 })
+type ToolResult = {
+  toolName: 'listStocks' | 'showStockPrice' | 'showStockPurchase' | 'getEvents';
+  result: any; // 您可以更精确地定义 result 的类型
+};
 
 export const getUIStateFromAIState = (aiState: Chat) => {
   return aiState.messages
@@ -551,26 +712,25 @@ export const getUIStateFromAIState = (aiState: Chat) => {
       id: `${aiState.chatId}-${index}`,
       display:
         message.role === 'tool' ? (
-          message.content.map(tool => {
+          message.content.map((tool: ToolResult) => {
             return tool.toolName === 'listStocks' ? (
               <BotCard>
                 {/* TODO: Infer types based on the tool result*/}
-                {/* @ts-expect-error */}
                 <Stocks props={tool.result} />
               </BotCard>
             ) : tool.toolName === 'showStockPrice' ? (
               <BotCard>
-                {/* @ts-expect-error */}
+
                 <Stock props={tool.result} />
               </BotCard>
             ) : tool.toolName === 'showStockPurchase' ? (
               <BotCard>
-                {/* @ts-expect-error */}
+
                 <Purchase props={tool.result} />
               </BotCard>
             ) : tool.toolName === 'getEvents' ? (
               <BotCard>
-                {/* @ts-expect-error */}
+
                 <Events props={tool.result} />
               </BotCard>
             ) : null
