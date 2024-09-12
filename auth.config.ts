@@ -38,5 +38,6 @@ export const authConfig = {
       return session
     }
   },
-  providers: []
+  providers: [],
+  trustHost:true,
 } satisfies NextAuthConfig

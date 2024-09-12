@@ -40,7 +40,7 @@ import * as use from '@tensorflow-models/universal-sentence-encoder';
 import * as tf from '@tensorflow/tfjs';
 
 let model: use.UniversalSentenceEncoder | null = null;
-
+console.log(process.env.NEXT_PUBLIC_API_DOMAIN)
 async function loadModel(): Promise<use.UniversalSentenceEncoder> {
   if (!model) {
     model = await use.load();
@@ -259,7 +259,7 @@ async function submitUserMessage(content: string) {
             console.log('Query vector before sending:', queryVector[0]);
 
             console.log('Sending request to backend...');
-            const res = await fetch('http://localhost:3002/api/chat', {
+            const res = await fetch(`http://${process.env.NEXT_PUBLIC_API_DOMAIN}:3002/api/chat`, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
