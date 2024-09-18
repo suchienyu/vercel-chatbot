@@ -1,64 +1,62 @@
-# 使用與 pnpm 8.6.3 兼容的 Node.js 版本
-FROM node:18.17.0-bullseye AS base
+FROM node:18-slim AS base
 
-# 在基礎映像中安裝 pnpm
-RUN npm install -g pnpm@8.6.3
-
-# 安裝依賴
+# Install dependencies only when needed
 FROM base AS deps
-RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
-# 安裝依賴
-COPY package.json ./
-RUN pnpm install
+# Install dependencies based on the preferred package manager
+COPY package.json yarn.lock* package-lock.json* pnpm-lock.yaml* ./
+RUN \
+  if [ -f yarn.lock ]; then yarn --frozen-lockfile --no-cache; \
+  elif [ -f package-lock.json ]; then npm ci --no-cache; \
+  elif [ -f pnpm-lock.yaml ]; then corepack enable pnpm && pnpm i --frozen-lockfile --no-cache; \
+  else echo "Lockfile not found." && exit 1; \
+  fi
 
-# 構建階段
+# Install TensorFlow.js dependencies in the deps stage
+RUN npm install @tensorflow/tfjs-node
+
+# Rebuild the source code only when needed
 FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# 重新構建 TensorFlow.js
-RUN npm rebuild @tensorflow/tfjs-node --build-from-source
+# Next.js collects completely anonymous telemetry data about general usage.
+# Learn more here: https://nextjs.org/telemetry
+ENV NEXT_TELEMETRY_DISABLED=1
 
-# 構建應用
-ENV NEXT_TELEMETRY_DISABLED 1
-RUN pnpm run build
+# Install build dependencies in the builder stage as well
+RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
 
-# 生產階段
+# Rebuild TensorFlow.js
+#RUN npm rebuild @tensorflow/tfjs-node --build-from-source
+
+RUN \
+  if [ -f yarn.lock ]; then yarn run build; \
+  elif [ -f package-lock.json ]; then npm run build; \
+  elif [ -f pnpm-lock.yaml ]; then corepack enable pnpm && pnpm run build; \
+  else echo "Lockfile not found." && exit 1; \
+  fi
+
+# Production image, copy all the files and run next
 FROM base AS runner
 WORKDIR /app
-ENV NODE_ENV production
-ENV NEXT_TELEMETRY_DISABLED 1
-ENV TF_CPP_MIN_LOG_LEVEL 2
 
-RUN groupadd -r nodejs && useradd -r -g nodejs nextjs
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
 
-# 複製必要文件並設置權限
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 nextjs
+
 COPY --from=builder /app/public ./public
-COPY --from=builder /app/package.json ./package.json
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-
-# 複製整個 node_modules 目錄
 COPY --from=builder /app/node_modules ./node_modules
-
-# 添加調試步驟
-RUN node --version
-RUN which node
-RUN ls -l /app/node_modules/@tensorflow || echo "TensorFlow directory not found"
-RUN ls -l /app/node_modules/@tensorflow/tfjs-node || echo "tfjs-node directory not found"
-RUN find /app/node_modules/@tensorflow -name "tfjs_binding.node" || echo "tfjs_binding.node not found"
 
 USER nextjs
 
 EXPOSE 3000
-ENV PORT 3000
-ENV HOSTNAME "0.0.0.0"
-CMD ["pnpm", "run","start"]
+ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
+CMD ["node", "server.js"]
